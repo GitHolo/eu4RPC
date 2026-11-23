@@ -46,13 +46,6 @@ func Format(st *eu4.GameState, cfg *config.Config) *discord.Activity {
 			LargeImage: cfg.Assets.Logo,
 			LargeText:  "Europa Universalis IV",
 		}
-	case eu4.ModeMainMenu:
-		act.Details = "In Main Menu"
-		act.State = "Europa Universalis IV"
-		act.Assets = &discord.Assets{
-			LargeImage: cfg.Assets.Logo,
-			LargeText:  "Europa Universalis IV",
-		}
 	case eu4.ModeInGame, eu4.ModeObserving:
 		formatInGame(act, st, cfg)
 	default:
@@ -176,9 +169,6 @@ func resolveLargeImage(st *eu4.GameState, cfg *config.Config) string {
 	if st.CountryTag != "" {
 		if url := cfg.FlagURL(st.CountryTag); url != "" {
 			return url
-		}
-		if cfg.UseDevPortalFlagAssets {
-			return "flag_" + strings.ToLower(st.CountryTag)
 		}
 	}
 	return cfg.Assets.Logo

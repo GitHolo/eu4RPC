@@ -22,19 +22,18 @@ type AssetsConfig struct {
 }
 
 type Config struct {
-	ClientID               string       `json:"client_id"`
-	EU4InstallDir          string       `json:"eu4_install_dir"`
-	UpdateIntervalSeconds  int          `json:"update_interval_seconds"`
-	PollIntervalSeconds    int          `json:"poll_interval_seconds"`
-	FlagBaseURL            string       `json:"flag_base_url"`
-	UseDevPortalFlagAssets bool         `json:"use_dev_portal_flag_assets"`
-	Assets                 AssetsConfig `json:"assets"`
+	ClientID              string       `json:"client_id"`
+	EU4InstallDir         string       `json:"eu4_install_dir"`
+	UpdateIntervalSeconds int          `json:"update_interval_seconds"`
+	PollIntervalSeconds   int          `json:"poll_interval_seconds"`
+	FlagBaseURL           string       `json:"flag_base_url"`
+	Assets                AssetsConfig `json:"assets"`
 }
 
 func Default() *Config {
 	return &Config{
 		ClientID:              DefaultClientIDPlaceholder,
-		EU4InstallDir:         `D:\Steam\steamapps\common\Europa Universalis IV`,
+		EU4InstallDir:         "",
 		UpdateIntervalSeconds: 60,
 		PollIntervalSeconds:   2,
 		FlagBaseURL:           "",
@@ -85,9 +84,6 @@ func (c *Config) ApplyDefaults() {
 		c.ClientID = def.ClientID
 	}
 	c.EU4InstallDir = strings.TrimSpace(c.EU4InstallDir)
-	if c.EU4InstallDir == "" {
-		c.EU4InstallDir = def.EU4InstallDir
-	}
 	if c.UpdateIntervalSeconds <= 0 {
 		c.UpdateIntervalSeconds = def.UpdateIntervalSeconds
 	}

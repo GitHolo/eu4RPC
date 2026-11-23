@@ -101,6 +101,8 @@ type Reader struct {
 	exePath          string
 	rvas             ResolvedRVAs
 	sessionStartUnix int64
+	failedPID        uint32
+	failedErr        error
 }
 
 func NewReader(locStore *loc.Store) *Reader {
@@ -119,6 +121,11 @@ func (r *Reader) RVAs() ResolvedRVAs {
 	return r.rvas
 }
 
+func (r *Reader) ResetFailedScan() {
+	r.failedPID = 0
+	r.failedErr = nil
+}
+
 func (r *Reader) Close() {
 	if r.handle != 0 {
 		_, _, _ = procCloseHandle.Call(uintptr(r.handle))
@@ -129,6 +136,8 @@ func (r *Reader) Close() {
 	r.exePath = ""
 	r.rvas = ResolvedRVAs{}
 	r.sessionStartUnix = 0
+	r.failedPID = 0
+	r.failedErr = nil
 }
 
 func (r *Reader) ReadState() (*GameState, error) {
@@ -484,7 +493,16 @@ func (r *Reader) ensureAttached() error {
 
 	pid, err := findEU4PID()
 	if err != nil {
+		r.failedPID = 0
+		r.failedErr = nil
 		return err
+	}
+	if r.failedPID != 0 {
+		if pid == r.failedPID {
+			return r.failedErr
+		}
+		r.failedPID = 0
+		r.failedErr = nil
 	}
 
 	h, _, callErr := procOpenProcess.Call(processVMRead|processQueryInfo, 0, uintptr(pid))
@@ -504,6 +522,9 @@ func (r *Reader) ensureAttached() error {
 	})
 	if err != nil {
 		_, _, _ = procCloseHandle.Call(uintptr(handle))
+		// avoid re-scanning ~30 MB every poll on an unsupported patch until restart
+		r.failedPID = pid
+		r.failedErr = err
 		return err
 	}
 
@@ -520,6 +541,8 @@ func (r *Reader) ensureAttached() error {
 	r.exePath = exePath
 	r.rvas = rvas
 	r.sessionStartUnix = getProcessStartUnix(handle)
+	r.failedPID = 0
+	r.failedErr = nil
 	return nil
 }
 
@@ -665,6 +688,15 @@ func (r *Reader) readMSVCString(addr uintptr) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return decodeMSVCString(b, func(ptr uintptr, size int) ([]byte, error) {
+		return r.readBytes(ptr, size)
+	})
+}
+
+func decodeMSVCString(b []byte, readHeap func(ptr uintptr, size int) ([]byte, error)) (string, error) {
+	if len(b) < 32 {
+		return "", errors.New("short std::string buffer")
+	}
 	size := binary.LittleEndian.Uint64(b[16:24])
 	capVal := binary.LittleEndian.Uint64(b[24:32])
 	if size == 0 {
@@ -679,7 +711,8 @@ func (r *Reader) readMSVCString(addr uintptr) (string, error) {
 		if ptr == 0 {
 			return "", errors.New("null std::string heap pointer")
 		}
-		raw, err = r.readBytes(uintptr(ptr), int(size))
+		var err error
+		raw, err = readHeap(uintptr(ptr), int(size))
 		if err != nil {
 			return "", err
 		}

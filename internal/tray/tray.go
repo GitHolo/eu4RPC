@@ -244,12 +244,35 @@ func (t *Tray) Run() error {
 	return nil
 }
 
-func (t *Tray) Stop() {
+func (t *Tray) SetIconFromExe(exePath string) {
+	if exePath == "" {
+		return
+	}
 	t.mu.RLock()
-	hwnd := t.hwnd
+	alreadyOwn := t.ownIcon
 	t.mu.RUnlock()
+	if alreadyOwn {
+		return
+	}
+
+	icon := extractSmallIcon(exePath)
+	if icon == 0 {
+		return
+	}
+
+	t.mu.Lock()
+	if t.ownIcon {
+		t.mu.Unlock()
+		_, _, _ = procDestroyIcon.Call(icon)
+		return
+	}
+	t.hIcon = icon
+	t.ownIcon = true
+	hwnd := t.hwnd
+	t.mu.Unlock()
+
 	if hwnd != 0 {
-		_, _, _ = procPostMessageW.Call(hwnd, wmDestroy, 0, 0)
+		_, _, _ = procPostMessageW.Call(hwnd, wmUpdateTray, 0, 0)
 	}
 }
 
@@ -326,7 +349,7 @@ func (t *Tray) addIcon() {
 }
 
 func (t *Tray) modifyIcon() {
-	nid := t.buildNID(nifTip)
+	nid := t.buildNID(nifIcon | nifTip)
 	_, _, _ = procShellNotifyIconW.Call(nimModify, uintptr(unsafe.Pointer(&nid)))
 }
 
@@ -417,12 +440,16 @@ func (t *Tray) handleCommand(id uint32) {
 }
 
 func appendMenuItem(hMenu uintptr, flags, id uint32, text string) {
-	var ptr uintptr
-	if text != "" {
-		p16, _ := syscall.UTF16PtrFromString(text)
-		ptr = uintptr(unsafe.Pointer(p16))
+	if text == "" {
+		_, _, _ = procAppendMenuW.Call(hMenu, uintptr(flags), uintptr(id), 0)
+		return
 	}
-	_, _, _ = procAppendMenuW.Call(hMenu, uintptr(flags), uintptr(id), ptr)
+	p16, err := syscall.UTF16PtrFromString(text)
+	if err != nil {
+		return
+	}
+	// keep p16 directly in .Call() so Go's GC cannot free it early
+	_, _, _ = procAppendMenuW.Call(hMenu, uintptr(flags), uintptr(id), uintptr(unsafe.Pointer(p16)))
 }
 
 func loadTrayIcon(exePath string) (uintptr, bool) {
@@ -431,30 +458,37 @@ func loadTrayIcon(exePath string) (uintptr, bool) {
 		candidates = append(candidates, self)
 	}
 	for _, p := range candidates {
-		if p == "" {
-			continue
-		}
-		if _, err := os.Stat(p); err != nil {
-			continue
-		}
-		p16, err := syscall.UTF16PtrFromString(p)
-		if err != nil {
-			continue
-		}
-		var smallIcon uintptr
-		ret, _, _ := procExtractIconExW.Call(
-			uintptr(unsafe.Pointer(p16)),
-			0,
-			0,
-			uintptr(unsafe.Pointer(&smallIcon)),
-			1,
-		)
-		if ret > 0 && smallIcon != 0 {
-			return smallIcon, true
+		if icon := extractSmallIcon(p); icon != 0 {
+			return icon, true
 		}
 	}
 	hIcon, _, _ := procLoadIconW.Call(0, uintptr(idiApplication))
 	return hIcon, false
+}
+
+func extractSmallIcon(p string) uintptr {
+	if p == "" {
+		return 0
+	}
+	if _, err := os.Stat(p); err != nil {
+		return 0
+	}
+	p16, err := syscall.UTF16PtrFromString(p)
+	if err != nil {
+		return 0
+	}
+	var smallIcon uintptr
+	ret, _, _ := procExtractIconExW.Call(
+		uintptr(unsafe.Pointer(p16)),
+		0,
+		0,
+		uintptr(unsafe.Pointer(&smallIcon)),
+		1,
+	)
+	if ret > 0 && smallIcon != 0 {
+		return smallIcon
+	}
+	return 0
 }
 
 func OpenPath(path string) {

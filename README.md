@@ -1,34 +1,33 @@
 # eu4-discord-rpc - eu4 discord rpc
 
-this is a little discord rich presence tray app for europa universalis iv (steam & epic games v1.37.5.0 inca) that reads live game state straight from memory without touching any game files or breaking your ironman/mp checksum. it's written in pure go with zero external dependencies, no electron, no bloat, just a tiny standalone `.exe` that sits in the system tray.
+this is a little discord rich presence tray app for europa universalis iv (steam & epic games, v1.37.5.0 inca) that reads live game state straight from memory without touching any game files or breaking your ironman/mp checksum. it's written in pure go with zero external dependencies. no electron, no bloat, just a tiny standalone `.exe` that sits in your system tray.
 
 ### features
+- works on both steam and epic games builds via runtime pattern scanning
+- auto-detects your eu4 install folder from the running `eu4.exe` (no manual path setup needed)
 - detects main menu, sp lobby, mp lobby (with player count), in-game, and observer mode
-- works on both steam and epic games builds via runtime pattern scanning and auto-detects the install path from the running `eu4.exe`
 - shows your current country, year, and mode (singleplayer, ironman, or multiplayer)
 - puts dev, province count, great power rank, current age, war status, and game speed / pause state in the hover tooltips
-- pulls country flags from a configurable url (or dev portal assets) and falls back to the eu4 logo
-- updates right away when you switch screens or tags, and throttles normal updates to whatever `update_interval_seconds` is set to
-- tracks total eu4 session time from the process start time
-- system tray menu with status, force refresh, config reload, log viewer, and start with windows toggle
+- pulls country flags from a configurable url and falls back to the eu4 logo
+- updates right away when you switch screens or form a new tag, and throttles normal updates to `update_interval_seconds`
+- tracks total eu4 session time from when the game started
+- system tray menu with live status, force refresh, config reload, log viewer, and start with windows toggle
 
 ### tech stack
-- go (logic, pe pattern scanner, memory reader, win32 tray, discord ipc)
-- win32 api via syscall (ReadProcessMemory, named pipes, system tray)
+- go (memory reader, pe pattern scanner, discord ipc, win32 system tray)
+- win32 api via syscall (ReadProcessMemory, named pipes, system tray, single-instance lock)
 - python + pillow (optional helper script to export icons and flags from eu4's `gfx/` folder)
 
 ### setup (easy way)
-1. grab `eu4-discord-rpc.exe` and `config.json` and put them in the same folder
-2. put your discord app id in `config.json` under `client_id` (and upload the 8 pngs from `assets/dev_portal/` to your discord dev portal app)
-3. tweak `eu4_install_dir` (optional - auto-detected from running `eu4.exe` if wrong or missing), `update_interval_seconds`, or `flag_base_url` in `config.json` if needed
-4. run `eu4-discord-rpc.exe` while eu4 and discord are open
+1. grab `eu4-discord-rpc.exe` and `config.json` from releases and put them in the same folder
+2. (optional) tweak `config.json` if you want to change `update_interval_seconds`, `flag_base_url`, or use your own discord app `client_id` (the 8 icons are in `assets/dev_portal/`)
+3. run `eu4-discord-rpc.exe` while eu4 and discord are open
 
 ### setup (from source)
 1. clone the repo
-2. edit `config.json` with your discord app id
-3. build with `go build -ldflags="-H=windowsgui -s -w" -o eu4-discord-rpc.exe ./cmd/eu4-discord-rpc`
-4. (optional) build the cli dumper with `go build -ldflags="-s -w" -o eu4-dump.exe ./cmd/eu4-dump` to inspect live memory output
-5. (optional) run `python scripts/export_assets.py --flags` if you want to re-export the icons or all 1,027 country flags
+2. build with `go build -ldflags="-H=windowsgui -s -w" -o eu4-discord-rpc.exe ./cmd/eu4-discord-rpc`
+3. (optional) build the cli dumper with `go build -ldflags="-s -w" -o eu4-dump.exe ./cmd/eu4-dump` to inspect what it reads from memory
+4. (optional) run `python scripts/export_assets.py --flags` to re-export the icons or all 1,027 country flags
 
 ### misc
 made by me. icons and flags are exported from eu4's own `gfx/` files, and country flags are hosted via jsdelivr.

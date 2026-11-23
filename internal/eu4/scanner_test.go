@@ -90,3 +90,64 @@ func TestScanTextWithRPMapAndFallbackCDB(t *testing.T) {
 		t.Fatalf("unexpected RVAs: %+v", rvas)
 	}
 }
+
+func makeSyntheticPEHeader() []byte {
+	const (
+		peOff   = 0x80
+		optSize = 0xF0
+	)
+	secOff := peOff + 24 + optSize
+	buf := make([]byte, secOff+3*40)
+	buf[0], buf[1] = 'M', 'Z'
+	binary.LittleEndian.PutUint32(buf[0x3C:0x40], peOff)
+	copy(buf[peOff:peOff+4], "PE\x00\x00")
+	binary.LittleEndian.PutUint16(buf[peOff+6:peOff+8], 3)
+	binary.LittleEndian.PutUint16(buf[peOff+20:peOff+22], optSize)
+
+	writeSec := func(idx int, name string, vsize, vaddr, rsize uint32) {
+		o := secOff + idx*40
+		copy(buf[o:o+8], name)
+		binary.LittleEndian.PutUint32(buf[o+8:o+12], vsize)
+		binary.LittleEndian.PutUint32(buf[o+12:o+16], vaddr)
+		binary.LittleEndian.PutUint32(buf[o+16:o+20], rsize)
+	}
+	writeSec(0, ".text", 0x10000, 0x1000, 0x10200)
+	writeSec(1, ".rdata", 0x4000, 0x12000, 0x4000)
+	writeSec(2, ".data", 0x5000, 0x20000, 0x6000)
+	return buf
+}
+
+func TestParsePESections(t *testing.T) {
+	hdr := makeSyntheticPEHeader()
+	readMoreCalled := false
+	textSec, dataSec, err := parsePESections(hdr[:0x180], func(n int) ([]byte, error) {
+		readMoreCalled = true
+		return hdr[:n], nil
+	})
+	if err != nil {
+		t.Fatalf("parsePESections failed: %v", err)
+	}
+	if !readMoreCalled {
+		t.Fatal("expected readMore to be called for truncated initial header")
+	}
+	if textSec.va != 0x1000 || textSec.size != 0x10000 {
+		t.Fatalf("unexpected .text section: %+v", textSec)
+	}
+	if dataSec.va != 0x20000 || dataSec.size != 0x6000 {
+		t.Fatalf("unexpected .data section: %+v", dataSec)
+	}
+
+	if _, _, err := parsePESections([]byte("NOPE"), nil); err == nil {
+		t.Fatal("expected error for invalid MZ header")
+	}
+	badPE := makeSyntheticPEHeader()
+	badPE[0x80] = 'X'
+	if _, _, err := parsePESections(badPE, nil); err == nil {
+		t.Fatal("expected error for invalid PE signature")
+	}
+	noData := makeSyntheticPEHeader()
+	noData[0x80+24+0xF0+2*40+1] = 'X'
+	if _, _, err := parsePESections(noData, nil); err == nil {
+		t.Fatal("expected error for missing .data section")
+	}
+}

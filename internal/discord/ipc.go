@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"unsafe"
 )
 
 const (
@@ -23,6 +25,9 @@ const (
 var (
 	ErrDiscordNotFound = errors.New("discord IPC pipe not found (is Discord running?)")
 	ErrNotConnected    = errors.New("not connected to Discord IPC")
+
+	modKernel32       = syscall.NewLazyDLL("kernel32.dll")
+	procPeekNamedPipe = modKernel32.NewProc("PeekNamedPipe")
 )
 
 type Timestamps struct {
@@ -92,10 +97,12 @@ type ipcResponse struct {
 }
 
 type Client struct {
-	mu       sync.Mutex
-	pipe     *os.File
-	clientID string
-	nonceSeq atomic.Uint64
+	mu         sync.Mutex
+	conn       io.ReadWriteCloser
+	checkAlive func() bool
+	dialPipe   func(slot int) (io.ReadWriteCloser, func() bool, error)
+	clientID   string
+	nonceSeq   atomic.Uint64
 }
 
 func NewClient() *Client {
@@ -105,41 +112,65 @@ func NewClient() *Client {
 func (c *Client) IsConnected() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.pipe != nil
+	if c.conn == nil {
+		return false
+	}
+	if c.checkAlive != nil && !c.checkAlive() {
+		c.closeLocked()
+		return false
+	}
+	return true
 }
 
 func (c *Client) Connect(clientID string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.pipe != nil && c.clientID == clientID {
+	if c.conn != nil && c.clientID == clientID && (c.checkAlive == nil || c.checkAlive()) {
 		return nil
 	}
 	c.closeLocked()
 
-	var f *os.File
-	var openErr error
-	for i := 0; i < 10; i++ {
-		pipePath := fmt.Sprintf(`\\.\pipe\discord-ipc-%d`, i)
-		f, openErr = openNamedPipe(pipePath)
-		if openErr == nil {
-			break
-		}
+	dial := c.dialPipe
+	if dial == nil {
+		dial = openDiscordPipe
 	}
-	if f == nil {
+
+	var openErr error
+	var handshakeErr error
+	openedAny := false
+
+	for i := 0; i < 10; i++ {
+		conn, alive, err := dial(i)
+		if err != nil {
+			openErr = err
+			continue
+		}
+		openedAny = true
+		c.conn = conn
+		c.checkAlive = alive
+		c.clientID = clientID
+
+		if err := c.handshakeLocked(clientID); err != nil {
+			handshakeErr = err
+			c.closeLocked()
+			continue
+		}
+		return nil
+	}
+
+	if !openedAny {
 		return fmt.Errorf("%w: %v", ErrDiscordNotFound, openErr)
 	}
+	return handshakeErr
+}
 
-	c.pipe = f
-	c.clientID = clientID
-
+func (c *Client) handshakeLocked(clientID string) error {
 	if err := c.sendLocked(OpHandshake, handshakePayload{V: 1, ClientID: clientID}); err != nil {
-		c.closeLocked()
 		return fmt.Errorf("discord handshake write failed: %w", err)
 	}
 	op, payload, err := c.readFrameLocked()
 	if err != nil {
-		c.closeLocked()
 		return fmt.Errorf("discord handshake read failed: %w", err)
 	}
 	if op == OpClose {
@@ -148,15 +179,12 @@ func (c *Client) Connect(clientID string) error {
 			Message string `json:"message"`
 		}
 		_ = json.Unmarshal(payload, &resp)
-		c.closeLocked()
 		return fmt.Errorf("discord rejected handshake (code=%d): %s", resp.Code, resp.Message)
 	}
 	var resp ipcResponse
 	if err := json.Unmarshal(payload, &resp); err == nil && resp.Evt == "ERROR" {
-		c.closeLocked()
 		return fmt.Errorf("discord handshake error (code=%d): %s", resp.Data.Code, resp.Data.Message)
 	}
-
 	return nil
 }
 
@@ -164,7 +192,7 @@ func (c *Client) SetActivity(pid int, act *Activity) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.pipe == nil {
+	if c.conn == nil {
 		return ErrNotConnected
 	}
 
@@ -210,10 +238,11 @@ func (c *Client) Close() error {
 }
 
 func (c *Client) closeLocked() {
-	if c.pipe != nil {
-		_ = c.pipe.Close()
-		c.pipe = nil
+	if c.conn != nil {
+		_ = c.conn.Close()
+		c.conn = nil
 	}
+	c.checkAlive = nil
 	c.clientID = ""
 }
 
@@ -222,29 +251,13 @@ func (c *Client) sendLocked(op uint32, v any) error {
 	if err != nil {
 		return err
 	}
-	frame := make([]byte, 8+len(body))
-	binary.LittleEndian.PutUint32(frame[0:4], op)
-	binary.LittleEndian.PutUint32(frame[4:8], uint32(len(body)))
-	copy(frame[8:], body)
-
-	written := 0
-	for written < len(frame) {
-		n, err := c.pipe.Write(frame[written:])
-		if err != nil {
-			return err
-		}
-		if n == 0 {
-			return io.ErrShortWrite
-		}
-		written += n
-	}
-	return nil
+	return c.writeRawLocked(op, body)
 }
 
 func (c *Client) readFrameLocked() (uint32, []byte, error) {
 	for {
 		var hdr [8]byte
-		if _, err := io.ReadFull(c.pipe, hdr[:]); err != nil {
+		if _, err := io.ReadFull(c.conn, hdr[:]); err != nil {
 			return 0, nil, err
 		}
 		op := binary.LittleEndian.Uint32(hdr[0:4])
@@ -254,7 +267,7 @@ func (c *Client) readFrameLocked() (uint32, []byte, error) {
 		}
 		payload := make([]byte, length)
 		if length > 0 {
-			if _, err := io.ReadFull(c.pipe, payload); err != nil {
+			if _, err := io.ReadFull(c.conn, payload); err != nil {
 				return 0, nil, err
 			}
 		}
@@ -271,8 +284,41 @@ func (c *Client) writeRawLocked(op uint32, payload []byte) error {
 	binary.LittleEndian.PutUint32(frame[0:4], op)
 	binary.LittleEndian.PutUint32(frame[4:8], uint32(len(payload)))
 	copy(frame[8:], payload)
-	_, err := c.pipe.Write(frame)
-	return err
+
+	written := 0
+	for written < len(frame) {
+		n, err := c.conn.Write(frame[written:])
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrShortWrite
+		}
+		written += n
+	}
+	return nil
+}
+
+func openDiscordPipe(slot int) (io.ReadWriteCloser, func() bool, error) {
+	f, err := openNamedPipe(fmt.Sprintf(`\\.\pipe\discord-ipc-%d`, slot))
+	if err != nil {
+		return nil, nil, err
+	}
+	return f, func() bool { return isPipeAlive(f) }, nil
+}
+
+func isPipeAlive(f *os.File) bool {
+	if f == nil {
+		return false
+	}
+	fd := f.Fd()
+	if fd == 0 || fd == ^uintptr(0) {
+		return false
+	}
+	var avail uint32
+	ret, _, _ := procPeekNamedPipe.Call(fd, 0, 0, 0, uintptr(unsafe.Pointer(&avail)), 0)
+	runtime.KeepAlive(f)
+	return ret != 0
 }
 
 func openNamedPipe(pipePath string) (*os.File, error) {

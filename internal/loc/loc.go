@@ -91,7 +91,7 @@ func LoadFromEU4Dir(eu4Dir string) (*Store, error) {
 		_ = s.loadFile(p, true)
 	}
 	for _, p := range replaceFiles {
-		_ = s.loadFile(p, strings.Contains(strings.ToLower(filepath.Base(p)), "countries"))
+		_ = s.loadFile(p, true)
 	}
 	return s, nil
 }
@@ -112,17 +112,13 @@ func (s *Store) loadFile(path string, countryPriority bool) error {
 		if !ok {
 			continue
 		}
-		if countryPriority && reTagKey.MatchString(key) {
-			s.Countries[key] = val
-		} else if reTagKey.MatchString(key) {
-			if _, exists := s.Countries[key]; !exists {
+		if reTagKey.MatchString(key) {
+			if _, exists := s.Countries[key]; countryPriority || !exists {
 				s.Countries[key] = val
 			}
 		}
-		if strings.HasPrefix(key, "age_") || key == "l_english" {
-			if key != "l_english" {
-				s.Entries[key] = val
-			}
+		if strings.HasPrefix(key, "age_") {
+			s.Entries[key] = val
 		}
 	}
 	return scanner.Err()
@@ -146,11 +142,21 @@ func parseLine(line string) (string, string, bool) {
 	if firstQuote < 0 {
 		return "", "", false
 	}
-	lastQuote := strings.LastIndexByte(rest, '"')
-	if lastQuote <= firstQuote {
+	endQuote := -1
+	for i := firstQuote + 1; i < len(rest); i++ {
+		if rest[i] == '\\' {
+			i++
+			continue
+		}
+		if rest[i] == '"' {
+			endQuote = i
+			break
+		}
+	}
+	if endQuote <= firstQuote {
 		return "", "", false
 	}
-	val := rest[firstQuote+1 : lastQuote]
+	val := rest[firstQuote+1 : endQuote]
 	val = cleanLocText(val)
 	if val == "" {
 		return "", "", false

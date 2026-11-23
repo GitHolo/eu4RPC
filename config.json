@@ -1,10 +1,9 @@
 {
   "client_id": "1400562928431792260",
-  "eu4_install_dir": "D:\\Steam\\steamapps\\common\\Europa Universalis IV",
+  "eu4_install_dir": "",
   "update_interval_seconds": 10,
   "poll_interval_seconds": 2,
   "flag_base_url": "https://cdn.jsdelivr.net/gh/GitHolo/eu4-flags@main/{TAG}.png",
-  "use_dev_portal_flag_assets": false,
   "assets": {
     "logo": "eu4_logo",
     "at_war": "at_war",
