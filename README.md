@@ -30,5 +30,5 @@ this is a little discord rich presence tray app for europa universalis iv (steam
 4. (optional) run `python scripts/export_assets.py --flags` to re-export the icons or all 1,027 country flags
 
 ### misc
-made by me. icons and flags are exported from eu4's own `gfx/` files, and country flags are hosted via jsdelivr.
+made by me. code is mit licensed (see `LICENSE`); icons and flags in `assets/` come from eu4's own `gfx/` files and belong to paradox interactive (excluded from the mit license), and country flags are hosted via jsdelivr.
 [![license: mit](https://img.shields.io/badge/license-mit-lightgrey.svg)](https://opensource.org/licenses/MIT)
