@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"unicode/utf8"
@@ -27,6 +28,7 @@ var (
 	procReadProcessMemory        = modKernel32.NewProc("ReadProcessMemory")
 	procGetProcessTimes          = modKernel32.NewProc("GetProcessTimes")
 	procGetExitCodeProcess       = modKernel32.NewProc("GetExitCodeProcess")
+	procQueryFullProcessImageNameW = modKernel32.NewProc("QueryFullProcessImageNameW")
 	procEnumProcessModulesEx     = modPsapi.NewProc("EnumProcessModulesEx")
 )
 
@@ -96,6 +98,8 @@ type Reader struct {
 	handle           syscall.Handle
 	pid              uint32
 	baseAddr         uintptr
+	exePath          string
+	rvas             ResolvedRVAs
 	sessionStartUnix int64
 }
 
@@ -107,6 +111,14 @@ func (r *Reader) SetLocStore(locStore *loc.Store) {
 	r.locStore = locStore
 }
 
+func (r *Reader) ExePath() string {
+	return r.exePath
+}
+
+func (r *Reader) RVAs() ResolvedRVAs {
+	return r.rvas
+}
+
 func (r *Reader) Close() {
 	if r.handle != 0 {
 		_, _, _ = procCloseHandle.Call(uintptr(r.handle))
@@ -114,6 +126,8 @@ func (r *Reader) Close() {
 	}
 	r.pid = 0
 	r.baseAddr = 0
+	r.exePath = ""
+	r.rvas = ResolvedRVAs{}
 	r.sessionStartUnix = 0
 }
 
@@ -122,7 +136,7 @@ func (r *Reader) ReadState() (*GameState, error) {
 		return nil, err
 	}
 
-	gsPtr, err := r.readU64(r.baseAddr + RVA_GameStatePtr)
+	gsPtr, err := r.readU64(r.baseAddr + r.rvas.GameState)
 	if err != nil {
 		if !r.isProcessAlive() {
 			r.Close()
@@ -283,7 +297,7 @@ func (r *Reader) populateCountryStats(st *GameState, gsAddr uintptr, tag string,
 		}
 	}
 
-	cdbPtr, err := r.readU64(r.baseAddr + RVA_CountryDBPtr)
+	cdbPtr, err := r.readU64(r.baseAddr + r.rvas.CountryDB)
 	if err != nil || cdbPtr == 0 {
 		return
 	}
@@ -378,9 +392,6 @@ func (r *Reader) checkFrontEnd(idlerAddr uintptr) (bool, error) {
 	if err != nil || vtbl == 0 {
 		return false, errors.New("null idler vtable")
 	}
-	if uintptr(vtbl)-r.baseAddr == RVA_FrontEndVtable {
-		return true, nil
-	}
 	fnPtr, err := r.readU64(uintptr(vtbl) + VtableOff_IsFrontEnd)
 	if err != nil || fnPtr == 0 {
 		return false, errors.New("bad IsFrontEnd vtable slot")
@@ -394,11 +405,14 @@ func (r *Reader) checkFrontEnd(idlerAddr uintptr) (bool, error) {
 }
 
 func (r *Reader) readCachedRPMap() map[string]string {
-	head, err := r.readU64(r.baseAddr + RVA_CachedRPMapHead)
+	if r.rvas.RPMapHead == 0 || r.rvas.RPMapSize == 0 {
+		return nil
+	}
+	head, err := r.readU64(r.baseAddr + r.rvas.RPMapHead)
 	if err != nil || head == 0 {
 		return nil
 	}
-	sz, err := r.readU64(r.baseAddr + RVA_CachedRPMapSize)
+	sz, err := r.readU64(r.baseAddr + r.rvas.RPMapSize)
 	if err != nil || sz == 0 || sz > 64 {
 		return nil
 	}
@@ -485,12 +499,27 @@ func (r *Reader) ensureAttached() error {
 		return err
 	}
 
-	startUnix := getProcessStartUnix(handle)
+	rvas, err := resolveRVAs(base, func(addr uintptr, n int) ([]byte, error) {
+		return readProcessBytes(handle, addr, n)
+	})
+	if err != nil {
+		_, _, _ = procCloseHandle.Call(uintptr(handle))
+		return err
+	}
+
+	exePath := getProcessExePath(handle)
+	if (r.locStore == nil || len(r.locStore.Countries) == 0) && exePath != "" {
+		if autoLoc, err := loc.LoadFromEU4Dir(filepath.Dir(exePath)); err == nil && len(autoLoc.Countries) > 0 {
+			r.locStore = autoLoc
+		}
+	}
 
 	r.handle = handle
 	r.pid = pid
 	r.baseAddr = base
-	r.sessionStartUnix = startUnix
+	r.exePath = exePath
+	r.rvas = rvas
+	r.sessionStartUnix = getProcessStartUnix(handle)
 	return nil
 }
 
@@ -549,6 +578,21 @@ func getMainModuleBase(h syscall.Handle) (uintptr, error) {
 	return hMods[0], nil
 }
 
+func getProcessExePath(h syscall.Handle) string {
+	var buf [512]uint16
+	size := uint32(len(buf))
+	ret, _, _ := procQueryFullProcessImageNameW.Call(
+		uintptr(h),
+		0,
+		uintptr(unsafe.Pointer(&buf[0])),
+		uintptr(unsafe.Pointer(&size)),
+	)
+	if ret == 0 || size == 0 {
+		return ""
+	}
+	return syscall.UTF16ToString(buf[:size])
+}
+
 func getProcessStartUnix(h syscall.Handle) int64 {
 	var creation, exit, kernel, user fileTime
 	ret, _, _ := procGetProcessTimes.Call(
@@ -569,14 +613,14 @@ func getProcessStartUnix(h syscall.Handle) int64 {
 	return int64((ft - windowsToUnixEpoch100ns) / 10000000)
 }
 
-func (r *Reader) readBytes(addr uintptr, size int) ([]byte, error) {
-	if r.handle == 0 || addr == 0 || size <= 0 {
+func readProcessBytes(h syscall.Handle, addr uintptr, size int) ([]byte, error) {
+	if h == 0 || addr == 0 || size <= 0 {
 		return nil, errors.New("invalid read")
 	}
 	buf := make([]byte, size)
 	var read uintptr
 	ret, _, err := procReadProcessMemory.Call(
-		uintptr(r.handle),
+		uintptr(h),
 		addr,
 		uintptr(unsafe.Pointer(&buf[0])),
 		uintptr(size),
@@ -586,6 +630,10 @@ func (r *Reader) readBytes(addr uintptr, size int) ([]byte, error) {
 		return nil, fmt.Errorf("ReadProcessMemory(0x%x, %d) failed: %w", addr, size, err)
 	}
 	return buf, nil
+}
+
+func (r *Reader) readBytes(addr uintptr, size int) ([]byte, error) {
+	return readProcessBytes(r.handle, addr, size)
 }
 
 func (r *Reader) readU64(addr uintptr) (uint64, error) {

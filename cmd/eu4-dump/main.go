@@ -15,8 +15,10 @@ import (
 )
 
 type dumpOutput struct {
-	GameState *eu4.GameState    `json:"game_state"`
-	Activity  *discord.Activity `json:"activity"`
+	ExePath      string            `json:"exe_path,omitempty"`
+	ResolvedRVAs eu4.ResolvedRVAs  `json:"resolved_rvas"`
+	GameState    *eu4.GameState    `json:"game_state"`
+	Activity     *discord.Activity `json:"activity"`
 }
 
 func main() {
@@ -56,7 +58,13 @@ func main() {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		enc.SetEscapeHTML(false)
-		if err := enc.Encode(dumpOutput{GameState: st, Activity: act}); err != nil {
+		out := dumpOutput{
+			ExePath:      reader.ExePath(),
+			ResolvedRVAs: reader.RVAs(),
+			GameState:    st,
+			Activity:     act,
+		}
+		if err := enc.Encode(out); err != nil {
 			fmt.Fprintf(os.Stderr, "encode error: %v\n", err)
 			return false
 		}

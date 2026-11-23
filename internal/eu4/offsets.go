@@ -1,15 +1,8 @@
 package eu4
 
-// eu4 1.37.5.0 inca (steam win64)
+// eu4 1.37.5.0 (steam & epic win64) struct offsets
 const (
 	ExpectedExeName = "eu4.exe"
-
-	// globals
-	RVA_GameStatePtr    uintptr = 0x233FE78
-	RVA_CountryDBPtr    uintptr = 0x233D8D0
-	RVA_CachedRPMapHead uintptr = 0x2462B90
-	RVA_CachedRPMapSize uintptr = 0x2462B98
-	RVA_FrontEndVtable  uintptr = 0x1D5A8C8
 
 	// idler / pause
 	VtableOff_IsFrontEnd    uintptr = 0x380

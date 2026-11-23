@@ -173,7 +173,12 @@ func runLoop(
 			return
 		}
 
-		lastPID = st.PID
+		if st.PID != lastPID {
+			rvas := reader.RVAs()
+			log.Printf("Attached to eu4.exe (pid=%d, path=%s, gs=0x%x, cdb=0x%x, rp=0x%x)",
+				st.PID, reader.ExePath(), rvas.GameState, rvas.CountryDB, rvas.RPMapHead)
+			lastPID = st.PID
+		}
 		lastReadErrMsg = ""
 
 		justConnected := false
